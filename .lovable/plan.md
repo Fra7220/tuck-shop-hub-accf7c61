@@ -1,63 +1,106 @@
 
-Goal: identify why your pushed GitHub code is not appearing in Lovable preview.
 
-What I found
-- The current Lovable project is still rendering the default placeholder from `src/pages/Index.tsx`.
-- The public GitHub repo you shared also still shows the placeholder app on `main`.
-- I checked the repo listing and recent commits: the latest commits are “Update plan” type commits, not actual UI/app file replacements.
-- The repo only has the default Vite/Lovable structure visible at the top level, and the raw `src/App.tsx` / `src/pages/Index.tsx` content matches the placeholder setup.
-- That means Lovable is not failing to display your app; the synced branch currently does not contain the app code that should replace the placeholder.
+# Enhancement Plan: Session Notes, Join Fix, Reports, Payment Classification, UI Polish
 
-Why it’s still blank
-- Your preview is doing exactly what the checked-in code says: load `Index`, which is still `PlaceholderIndex`.
-- The console warning about refs is secondary; it does not explain the blank page. The main issue is that the app page was never actually replaced in the synced code.
+## 1. Database Migration
 
-Implementation plan
-1. Confirm the correct branch and files
-- Verify that your real app code was pushed to `main`, not another local branch.
-- Specifically check whether these files changed in GitHub:
-  - `src/pages/Index.tsx`
-  - `src/App.tsx`
-  - any new components/pages you expected
+Add `session_notes` column to `daily_sessions` and `method_type` column to `payment_methods`:
 
-2. Compare the intended app code against this Lovable project
-- If your real code exists in another branch/repo, bring that exact code here.
-- If you only changed files locally but did not push them, push again and confirm the files are visible on GitHub web.
+```sql
+-- Session notes for end-of-session review
+ALTER TABLE daily_sessions ADD COLUMN session_notes text;
 
-3. Replace the placeholder entrypoint
-- Update `src/pages/Index.tsx` so it renders your actual Tuck Shop Hub UI instead of the placeholder image.
-- Ensure any imported components/pages actually exist in `src/`.
-
-4. Fix routing if your app uses multiple pages
-- If your pushed app expects routes like dashboard/login/products, register them in `src/App.tsx`.
-- Keep `"/"` pointing to the correct landing/dashboard page.
-
-5. Resolve any follow-up runtime warnings
-- After the real UI is in place, fix the React ref warning if it still appears.
-- Then verify the preview renders the correct app and not the placeholder.
-
-What I need from you
-Choose one of these so I can make the right implementation plan next:
-- Share the exact branch name where your real app code lives
-- Share links to the GitHub files that contain your actual app UI
-- Paste your updated `src/pages/Index.tsx` and `src/App.tsx` here
-
-Technical details
-```text
-Current render flow:
-src/main.tsx -> App.tsx -> route "/" -> src/pages/Index.tsx
-
-Current Index.tsx:
-PlaceholderIndex
-  -> div
-  -> /placeholder.svg
-
-Result:
-Preview shows blank/default placeholder
+-- Payment method classification: revenue vs expenditure
+ALTER TABLE payment_methods ADD COLUMN method_type text NOT NULL DEFAULT 'revenue'
+  CHECK (method_type IN ('revenue', 'expenditure'));
 ```
 
-Most likely root cause
-```text
-GitHub sync is connected, but the synced branch content still contains
-the default placeholder app, so there is nothing new for Lovable to display.
+No new RLS policies needed — existing policies cover these columns.
+
+---
+
+## 2. Session Notes (Optional Field on Close/Exit)
+
+**Files:** `EmployeeSessions.tsx`, `Sessions.tsx`
+
+- Add a `Textarea` field labeled "Session Notes (optional)" in both the close-session form (admin) and exit-session flow (employee individual exit)
+- On close: include `session_notes` in the `daily_sessions` update
+- On individual exit: store note in a new state but don't block submission — the note gets saved when session is fully closed
+- Display notes in session history table as an expandable row or tooltip icon when present
+
+---
+
+## 3. Fix Duplicate Join Bug
+
+**Files:** `EmployeeSessions.tsx`
+
+The bug: when the current user is the session creator (`employee_id === user.id`) AND is already in `session_participants`, the UI still shows "Join Session" if `myParticipation` check fails (e.g., the creator auto-joined but the check doesn't account for being the creator).
+
+**Fix:** In `renderActiveSessionCard()`, change the join condition from `!isParticipating` to `!isParticipating && !isSessionCreator`. Also add a backend guard: before inserting into `session_participants`, check if a row already exists for this `(session_id, user_id)`. Show "Active – You Are a Participant" badge instead of Join button.
+
+Add a unique constraint via migration:
+```sql
+CREATE UNIQUE INDEX idx_unique_active_participant 
+  ON session_participants(session_id, user_id) WHERE exit_time IS NULL;
 ```
+
+---
+
+## 4. Payment Method Classification (Revenue/Expenditure)
+
+**Files:** `PaymentMethods.tsx`, `EmployeeSessions.tsx`, `Sessions.tsx`, `Reports.tsx`, `Analytics.tsx`
+
+- **PaymentMethods.tsx:** Add a `Select` dropdown in the add/edit dialog: "Revenue Source" or "Expenditure Source". Display a badge per method in the table showing its type.
+- **Session pages:** When calculating totals, revenue methods add to income, expenditure methods subtract. Replace the hardcoded `Cash Outs` check with `method_type === 'expenditure'`.
+- **Reports:** Separate revenue and expenditure streams in generated reports with subtotals for each.
+- **Analytics:** Add revenue vs expenditure breakdown in charts.
+
+---
+
+## 5. Enhanced Reports & PDF Generation
+
+**Files:** `Reports.tsx`
+
+Upgrade the "Sessions" report type to include:
+- Session start/end times, duration
+- All participants with join/exit timestamps
+- Per-method financial breakdown with revenue/expenditure classification
+- Net balance reconciliation (total revenue - total expenditure)
+- Session notes when present
+- Discrepancy highlighting
+
+**PDF branding upgrade:**
+- Add MUST Business logo (`/icon-192x192.png`) as base64 in header
+- Add tuckshop name prominently
+- Add generation timestamp and date range
+- Structured financial tables with revenue/expenditure separation
+- Professional footer with page info
+
+Fetch `session_participants` + `profiles` + `session_payments` + `payment_methods` when generating session reports.
+
+---
+
+## 6. UI/UX Animation Polish
+
+**Files:** `Index.tsx`, sidebar components, dashboard pages
+
+- Add `will-change-transform` to animated elements for GPU acceleration
+- Use `transform3d` in framer-motion for hardware acceleration
+- Ensure mobile drawer uses `will-change: transform` 
+- Add `transition-gpu` utility class usage across components
+- This is incremental CSS — no major refactoring needed
+
+---
+
+## Files Modified Summary
+
+| File | Changes |
+|------|---------|
+| Migration SQL | `session_notes` column, `method_type` column, unique participant index |
+| `EmployeeSessions.tsx` | Session notes textarea, fix join bug (creator check), expenditure-aware revenue calc |
+| `Sessions.tsx` | Session notes textarea on close, expenditure-aware calc, notes in history |
+| `PaymentMethods.tsx` | Add method_type selector (revenue/expenditure), display badge |
+| `Reports.tsx` | Enhanced session report with participants/notes/classification, branded PDF |
+| `Analytics.tsx` | Revenue vs expenditure breakdown |
+| `Index.tsx` | GPU-accelerated animations |
+
